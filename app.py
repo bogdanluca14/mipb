@@ -115,10 +115,7 @@ else:
         # Logout
         authenticator.logout("Logout", "sidebar")
 
-    elif auth_status is False:
-        st.error("Username sau parola incorectă.")
-    else:
-        st.warning("Te rog loghează-te.")
-        st.error("Username sau parola incorectă.")
-    else:
-        st.warning("Te rog loghează-te.")
+            elif auth_status is False:
+            st.error("Username sau parola incorectă.")
+        else:
+            st.warning("Te rog loghează-te.")
