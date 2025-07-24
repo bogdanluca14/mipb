@@ -5,11 +5,11 @@ import streamlit as st
 from streamlit_authenticator import Authenticate, Hasher
 
 # Pentru Streamlit Community Cloud:
-# 1. Creează un fișier requirements.txt cu:
-#    streamlit
-#    streamlit-authenticator
-#    bcrypt
-# 2. Commit-ează-l în repo – dependențele se instalează automat la deploy.
+# Creează un fișier requirements.txt cu:
+# streamlit
+# streamlit-authenticator
+# bcrypt
+# și commit-ează-l în repo - dependențele se instalează automat.
 
 # --- CONFIG STREAMLIT & STILIZARE ---
 st.set_page_config(
@@ -49,7 +49,7 @@ data = load_data()
 # --- AUTENTIFICARE & ÎNREGISTRARE ---
 mode = st.sidebar.selectbox("Mod", ["Login", "Register"])
 
-# Construim structura de credențiale pentru streamlit-authenticator
+# Construim structura de credentials conform streamlit-authenticator
 credentials = {"usernames": {}}
 for user in data["users"]:
     credentials["usernames"][user["username"]] = {
@@ -57,7 +57,7 @@ for user in data["users"]:
         "password": user["hashed_password"]
     }
 
-# Instanțiem autentificator
+# Instanțiem autenticarea
 authenticator = Authenticate(
     credentials,
     cookie_name="matinfo_session",
@@ -75,6 +75,7 @@ if mode == "Register":
             if any(u["username"] == new_username for u in data["users"]):
                 st.error("Username-ul există deja.")
             else:
+                # Generăm hash-ul parolei
                 hashed = Hasher([new_password]).generate()[0]
                 new_id = max((u["id"] for u in data["users"]), default=0) + 1
                 data["users"].append({
@@ -87,28 +88,28 @@ if mode == "Register":
                 save_data(data)
                 st.success("Înregistrare cu succes! Te poți loga acum.")
                 st.experimental_rerun()
+
 else:
-    # Login folosind etichete și locație compatibile
-    name, auth_status, username = authenticator.login(
-        "Username",  # label pentru câmpul username
-        "Password",  # label pentru câmpul password
-        "sidebar"    # locația formularului: main, sidebar sau unrendered
-    )
+    # Login default (fără etichete suplimentare)
+    name, auth_status, username = authenticator.login('Username', 'Password', 'sidebar')
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
         pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
+        # Adăugăm Dashboard Admin dacă userul e admin
         if any(u for u in data["users"] if u["username"] == username and u.get("is_admin")):
             pages.append("Dashboard Admin")
         page = st.sidebar.selectbox("Navigare", pages)
 
+        # Pagina Acasă
         if page == "Acasă":
             st.markdown(
                 f"<h2 style='text-align:center;'>Bine ai venit, <span style='color:#1f77b4;'>{name}</span>!</h2>",
                 unsafe_allow_html=True
             )
-        # ... restul paginilor rămâne același
+        # ... restul codului rămâne neschimbat pentru pagini
 
         authenticator.logout("Logout", "sidebar")
+
     elif auth_status is False:
         st.error("Username sau parola incorectă.")
     else:
