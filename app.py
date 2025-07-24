@@ -1,31 +1,15 @@
 import os
 import json
 from datetime import datetime
-import subprocess
-import sys
 import streamlit as st
 from streamlit_authenticator import Authenticate, Hasher
 
-# --- ASIGURĂ DEPENDENȚELE ---
-def ensure_package(import_name: str, pip_name: str = None):
-    try:
-        __import__(import_name)
-    except ImportError:
-        pkg = pip_name or import_name
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-        except subprocess.CalledProcessError:
-            st.error(f"Nu am reușit să instalez '{pkg}' automat. Te rog rulează manual: pip install {pkg}")
-            st.stop()
-
-# Mapare import_name -> nume pip
-dependencies = [
-    ("streamlit", None),
-    ("streamlit_authenticator", "streamlit-authenticator"),
-    ("bcrypt", None)
-]
-for imp, pkg in dependencies:
-    ensure_package(imp, pkg)
+# Pentru Streamlit Community Cloud:
+# - Creează un fișier requirements.txt în același director cu:
+#     streamlit
+#     streamlit-authenticator
+#     bcrypt
+# - Commit‐ează‐l în repo și Streamlit va instala automat dependențele.
 
 # --- CONFIG STREAMLIT & STILIZARE ---
 st.set_page_config(
