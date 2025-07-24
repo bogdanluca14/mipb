@@ -49,7 +49,7 @@ data = load_data()
 # --- AUTENTIFICARE & ÎNREGISTRARE ---
 mode = st.sidebar.selectbox("Mod", ["Login", "Register"])
 
-# Construim structura de credentials conform streamlit-authenticator
+# Construcție credențiale pentru streamlit-authenticator
 credentials = {"usernames": {}}
 for user in data["users"]:
     credentials["usernames"][user["username"]] = {
@@ -57,7 +57,7 @@ for user in data["users"]:
         "password": user["hashed_password"]
     }
 
-# Instanțiem authenticator
+# Instanțiere authenticator
 authenticator = Authenticate(
     credentials,
     cookie_name="matinfo_session",
@@ -75,7 +75,6 @@ if mode == "Register":
             if any(u["username"] == new_username for u in data["users"]):
                 st.error("Username-ul există deja.")
             else:
-                # Hash parola nouă
                 hashed = Hasher([new_password]).generate()[0]
                 new_id = max((u["id"] for u in data["users"]), default=0) + 1
                 data["users"].append({
@@ -88,6 +87,84 @@ if mode == "Register":
                 save_data(data)
                 st.success("Înregistrare cu succes! Te poți loga acum.")
                 st.experimental_rerun()
+
 else:
-    # Apelăm login cu parametrul location specificat explicit
-    name, auth_status, username = authenticator.login("Login", location="sidebar")
+    # Login în sidebar
+    name, auth_status, username = authenticator.login(username_label="Username", password_label="Password", location="sidebar")
+    if auth_status:
+        st.sidebar.success(f"Bine ai venit, {name}!")
+        pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
+        if any(u for u in data["users"] if u["username"] == username and u.get("is_admin")):
+            pages.append("Dashboard Admin")
+        page = st.sidebar.selectbox("Navigare", pages)
+
+        if page == "Acasă":
+            st.markdown(f"<h2 style='text-align:center;'>Bine ai venit, <span style='color:#1f77b4;'>{name}</span>!</h2>", unsafe_allow_html=True)
+
+        elif page == "Propune problemă":
+            st.subheader("Încarcă o problemă nouă")
+            with st.form("upload_problem"):
+                title = st.text_input("Titlu")
+                statement = st.text_area("Enunț")
+                grade = st.selectbox("Clasa", list(range(5, 13)))
+                difficulty = st.selectbox("Dificultate", ["Ușor", "Mediu", "Greu"])
+                if st.form_submit_button("Salvează"):
+                    pid = max((p["id"] for p in data["problems"]), default=0) + 1
+                    author = next(u for u in data["users"] if u["username"] == username)["id"]
+                    data["problems"].append({
+                        "id": pid,
+                        "title": title,
+                        "statement": statement,
+                        "grade": grade,
+                        "difficulty": difficulty,
+                        "author_id": author,
+                        "created_at": datetime.utcnow().isoformat()
+                    })
+                    save_data(data)
+                    st.success("Problemă încărcată cu succes!")
+
+        elif page == "Vizualizează probleme":
+            st.subheader("Listă probleme")
+            for p in sorted(data["problems"], key=lambda x: x["created_at"], reverse=True):
+                st.markdown("<div class='card'>", unsafe_allow_html=True)
+                cols = st.columns([4, 1, 1])
+                cols[0].markdown(f"**{p['title']}** (Clasa {p['grade']}, {p['difficulty']})")
+                vote_count = len([v for v in data["votes"] if v["problem_id"] == p["id"]])
+                comment_count = len([c for c in data["comments"] if c["problem_id"] == p["id"]])
+                if cols[1].button(f"👍 {vote_count}", key=f"vote_{p['id']}"):
+                    uid = next(u for u in data["users"] if u["username"] == username)["id"]
+                    data["votes"].append({"user_id": uid, "problem_id": p["id"], "created_at": datetime.utcnow().isoformat()})
+                    save_data(data)
+                    st.experimental_rerun()
+                if cols[2].button(f"💬 {comment_count}", key=f"comment_{p['id']}"):
+                    st.session_state['comment_problem'] = p['id']
+                    st.experimental_rerun()
+                if st.session_state.get('comment_problem') == p['id']:
+                    comment = st.text_area("Comentariu")
+                    if st.button("Trimite", key=f"send_comment_{p['id']}"):
+                        uid = next(u for u in data["users"] if u["username"] == username)["id"]
+                        data["comments"].append({"user_id": uid, "problem_id": p['id'], "content": comment, "created_at": datetime.utcnow().isoformat()})
+                        save_data(data)
+                        st.success("Comentariu adăugat!")
+                        del st.session_state['comment_problem']
+                        st.experimental_rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        elif page == "Articole":
+            st.subheader("Articole")
+            for a in sorted(data["articles"], key=lambda x: x["created_at"], reverse=True):
+                st.markdown("<div class='card'>", unsafe_allow_html=True)
+                st.markdown(f"### {a['title']}")
+                st.write(a['content'])
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        else:
+            st.subheader("Administrare conținut")
+            st.write("Feature în curs de implementare...")
+
+        authenticator.logout("Logout", "sidebar")
+
+    elif auth_status is False:
+        st.error("Username sau parola incorectă.")
+    else:
+        st.warning("Te rog loghează-te.")
