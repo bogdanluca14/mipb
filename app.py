@@ -1,8 +1,10 @@
-import subprocess
-import sys
 import os
 import json
 from datetime import datetime
+import subprocess
+import sys
+import streamlit as st
+from streamlit_authenticator import Authenticate, Hasher
 
 # --- ASIGURĂ DEPENDENȚELE ---
 def ensure_package(import_name: str, pip_name: str = None):
@@ -10,9 +12,13 @@ def ensure_package(import_name: str, pip_name: str = None):
         __import__(import_name)
     except ImportError:
         pkg = pip_name or import_name
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+        except subprocess.CalledProcessError:
+            st.error(f"Nu am reușit să instalez '{pkg}' automat. Te rog rulează manual: pip install {pkg}")
+            st.stop()
 
-# Specific mapping pip names
+# Mapare import_name -> nume pip
 dependencies = [
     ("streamlit", None),
     ("streamlit_authenticator", "streamlit-authenticator"),
@@ -20,10 +26,6 @@ dependencies = [
 ]
 for imp, pkg in dependencies:
     ensure_package(imp, pkg)
-
-# Acum importăm pachetele
-import streamlit as st
-from streamlit_authenticator import Authenticate, Hasher
 
 # --- CONFIG STREAMLIT & STILIZARE ---
 st.set_page_config(
