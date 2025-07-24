@@ -91,7 +91,7 @@ if mode == "Register":
 
 else:
     # Login default (fără etichete suplimentare)
-    name, auth_status, username = authenticator.login('Username', 'Password', 'sidebar')
+    name, auth_status, username = authenticator.login("Login", "sidebar")
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
         pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
