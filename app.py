@@ -194,7 +194,7 @@ if choice == "Logout":
     st.session_state.logged_in = False
     st.session_state.username = None
     st.session_state.role = None
-    st.experimental_rerun()  # refresh to show logged-out menu (we use rerun on logout for immediate effect)
+    st.rerun()  # refresh to show logged-out menu (we use rerun on logout for immediate effect)
 elif choice == "Login / Register":
     st.session_state.page = "Login"
 elif choice == "Home":
@@ -237,7 +237,7 @@ if st.session_state.page == "Login":
             st.session_state.role = user["role"]
             st.success(f"Welcome, {username}!")
             st.session_state.page = "Home"
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Invalid username or password")
     st.markdown("---")
@@ -279,7 +279,7 @@ if st.session_state.page == "Problems":
             if st.button(f"Open {p['title']}", key=f"open{p['id']}"):
                 st.session_state.view_problem = p["id"]
                 st.session_state.page = "View Problem"
-                st.experimental_rerun()
+                st.rerun()
     if math_probs:
         st.subheader("Math Problems")
         for p in math_probs:
@@ -296,7 +296,7 @@ if st.session_state.page == "Problems":
             if st.button(f"Open {p['title']}", key=f"open{p['id']}"):
                 st.session_state.view_problem = p["id"]
                 st.session_state.page = "View Problem"
-                st.experimental_rerun()
+                st.rerun()
     if not problems:
         st.write("No problems available yet.")
 
@@ -430,7 +430,7 @@ if st.session_state.page == "Create Problem":
                 if new_in and new_out:
                     st.session_state.new_testcases.append({"input": new_in, "output": new_out, "public": public_flag})
                     # Clear fields
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.warning("Please provide both input and output for the test case.")
             # Display current test cases list
@@ -469,7 +469,7 @@ if st.session_state.page == "Create Problem":
             if st.button("Add Section"):
                 if rub_section and rub_points:
                     st.session_state.new_rubric.append({"section": rub_section, "points": int(rub_points)})
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.warning("Please specify both section description and points.")
             if st.session_state.new_rubric:
@@ -521,7 +521,7 @@ if st.session_state.page == "Articles":
                             art["downvoters"].remove(user)
                         art["votes"] = art.get("votes", 0) + 1
                         save_json("articles.json", articles)
-                        st.experimental_rerun()
+                        st.rerun()
                 with col2:
                     if st.button("👎 Dislike", key=f"dis{art['id']}", disabled=voted_down):
                         art.setdefault("downvoters", []).append(user)
@@ -530,7 +530,7 @@ if st.session_state.page == "Articles":
                             art["upvoters"].remove(user)
                         art["votes"] = art.get("votes", 0) - 1
                         save_json("articles.json", articles)
-                        st.experimental_rerun()
+                        st.rerun()
             # Comments section
             art_comments = [c for c in comments if c["article_id"] == art["id"]]
             for c in art_comments:
@@ -548,7 +548,7 @@ if st.session_state.page == "Articles":
                         }
                         comments.append(new_comment)
                         save_json("comments.json", comments)
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.warning("Comment cannot be empty.")
             st.markdown("---")
@@ -573,7 +573,7 @@ if st.session_state.page == "Articles":
                 articles.append(new_article)
                 save_json("articles.json", articles)
                 st.success("Article published!")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.warning("Title and content cannot be empty.")
 
@@ -687,7 +687,7 @@ if st.session_state.page == "Admin":
                         # (We could store detailed breakdown in s as well, e.g., s['points_breakdown'] = points_awarded)
                         save_json("submissions.json", submissions)
                         st.success(f"Submission {s['id']} graded with {total_points} points.")
-                        st.experimental_rerun()
+                        st.rerun()
         # Articles tab
         with selected_tab[2 if st.session_state.role != "admin" else 3]:
             st.subheader("Manage Articles")
