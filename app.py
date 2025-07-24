@@ -90,7 +90,7 @@ if mode == "Register":
 
 else:
     # Login în sidebar cu argumetele posiționale corecte
-    name, auth_status, username = authenticator.login("Login", "sidebar")
+    name, auth_status, username = authenticator.login("Username", "Password", location="sidebar")
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
         pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
