@@ -1,6 +1,27 @@
+import subprocess
+import sys
 import os
 import json
 from datetime import datetime
+
+# --- ASIGURĂ DEPENDENȚELE ---
+def ensure_package(import_name: str, pip_name: str = None):
+    try:
+        __import__(import_name)
+    except ImportError:
+        pkg = pip_name or import_name
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+
+# Specific mapping pip names
+dependencies = [
+    ("streamlit", None),
+    ("streamlit_authenticator", "streamlit-authenticator"),
+    ("bcrypt", None)
+]
+for imp, pkg in dependencies:
+    ensure_package(imp, pkg)
+
+# Acum importăm pachetele
 import streamlit as st
 from streamlit_authenticator import Authenticate, Hasher
 
@@ -11,7 +32,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 st.markdown(
     """
     <style>
@@ -37,9 +57,6 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
-# Încurajare: instalează dependențele cu pip înainte de rulare:
-# pip install streamlit streamlit-authenticator bcrypt
 
 data = load_data()
 
@@ -67,8 +84,7 @@ if mode == "Register":
         new_username = st.text_input("Username")
         new_name = st.text_input("Nume complet")
         new_password = st.text_input("Parolă", type="password")
-        submitted = st.form_submit_button("Înregistrează-te")
-        if submitted:
+        if st.form_submit_button("Înregistrează-te"):
             if any(u["username"] == new_username for u in data["users"]):
                 st.error("Username-ul există deja.")
             else:
