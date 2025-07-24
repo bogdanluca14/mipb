@@ -4,17 +4,28 @@ import os
 import json
 from datetime import datetime
 import streamlit as st
-from streamlit_authenticator import Authenticate, Hasher
 
 # --- ASIGURĂ DEPENDENȚELE ---
-def ensure_package(package):
+# helper pentru import vs pip package name
+def ensure_package(import_name: str, pip_name: str = None):
     try:
-        __import__(package)
+        __import__(import_name)
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        pkg = pip_name or import_name
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
 
-for pkg in ["streamlit", "streamlit_authenticator"]:
-    ensure_package(pkg)
+# listează pachete cu mapping import_name -> pip_name
+packages = [
+    ("streamlit", None),
+    ("streamlit_authenticator", "streamlit-authenticator"),
+    ("bcrypt", None)
+]
+for imp, pip in packages:
+    ensure_package(imp, pip)
+
+# acum importă autentificator și bcrypt
+from streamlit_authenticator import Authenticate, Hasher
+import bcrypt
 
 # --- CONFIG STREAMLIT & STILIZARE ---
 st.set_page_config(
@@ -27,33 +38,11 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    body {
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-    }
-    .card {
-        background: #fff;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    }
-    .stButton>button {
-        background-color: #1f77b4;
-        color: #fff;
-        border-radius: 8px;
-        padding: 0.5rem 1.5rem;
-        font-weight: 600;
-    }
-    .stButton>button:hover {
-        background-color: #155d8b;
-        transition: 0.2s;
-    }
-    .stTextInput input,
-    .stTextArea textarea {
-        border-radius: 8px;
-        padding: 0.75rem;
-        border: 1px solid #ccc;
-    }
+    body { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); }
+    .card { background: #fff; padding: 1.5rem; margin: 1rem 0; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+    .stButton>button { background-color: #1f77b4; color: #fff; border-radius: 8px; padding: 0.5rem 1.5rem; font-weight: 600; }
+    .stButton>button:hover { background-color: #155d8b; transition: 0.2s; }
+    .stTextInput input, .stTextArea textarea { border-radius: 8px; padding: 0.75rem; border: 1px solid #ccc; }
     </style>
     """,
     unsafe_allow_html=True
@@ -68,24 +57,21 @@ def load_data():
             return json.load(f)
     return {"users": [], "problems": [], "votes": [], "comments": [], "articles": []}
 
-
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Încarcă date
 data = load_data()
 
 # --- AUTENTIFICARE & ÎNREGISTRARE ---
-# Alege între login și register
 mode = st.sidebar.selectbox("Mod", ["Login", "Register"])
 
-# Pregătește credențiale pentru streamlit-authenticator
 def get_credentials(users):
-    usernames = [u["username"] for u in users]
-    names = [u["name"] for u in users]
-    passwords = [u["hashed_password"] for u in users]
-    return {"username": usernames, "name": names, "password": passwords}
+    return {
+        "username": [u["username"] for u in users],
+        "name": [u["name"] for u in users],
+        "password": [u["hashed_password"] for u in users]
+    }
 
 credentials = get_credentials(data["users"])
 authenticator = Authenticate(
@@ -106,9 +92,8 @@ if mode == "Register":
             if any(u["username"] == new_username for u in data["users"]):
                 st.error("Username-ul există deja.")
             else:
-                # Hashează parola
                 hashed = Hasher([new_password]).generate()[0]
-                new_id = max([u["id"] for u in data["users"]], default=0) + 1
+                new_id = max((u["id"] for u in data["users"]), default=0) + 1
                 data["users"].append({
                     "id": new_id,
                     "username": new_username,
@@ -120,19 +105,16 @@ if mode == "Register":
                 st.success("Înregistrare cu succes! Te poți loga acum.")
                 st.experimental_rerun()
 else:
-    # Login
     name, auth_status, username = authenticator.login("Login", "main")
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
-        # Navigație
-        page = st.sidebar.selectbox("Navigare", ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"] + (["Dashboard Admin"] if any(u for u in data["users"] if u["username"] == username and u.get("is_admin")) else []))
+        pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
+        if any(u for u in data["users"] if u["username"] == username and u.get("is_admin")):
+            pages.append("Dashboard Admin")
+        page = st.sidebar.selectbox("Navigare", pages)
 
-        # Pagina Acasă
         if page == "Acasă":
             st.markdown(f"<h2 style='text-align:center;'>Bine ai venit, <span style='color:#1f77b4;'>{name}</span>!</h2>", unsafe_allow_html=True)
-            st.write("Alege o opțiune din meniu.")
-
-        # Propune problemă
         elif page == "Propune problemă":
             st.subheader("Încarcă o problemă nouă")
             with st.form("upload_problem"):
@@ -140,9 +122,8 @@ else:
                 statement = st.text_area("Enunț")
                 grade = st.selectbox("Clasa", list(range(5, 13)))
                 difficulty = st.selectbox("Dificultate", ["Ușor", "Mediu", "Greu"])
-                submitted = st.form_submit_button("Salvează")
-                if submitted:
-                    pid = max([p["id"] for p in data["problems"]], default=0) + 1
+                if st.form_submit_button("Salvează"):
+                    pid = max((p["id"] for p in data["problems"]), default=0) + 1
                     author = next(u for u in data["users"] if u["username"] == username)["id"]
                     data["problems"].append({
                         "id": pid,
@@ -155,8 +136,6 @@ else:
                     })
                     save_data(data)
                     st.success("Problemă încărcată cu succes!")
-
-        # Vizualizează probleme
         elif page == "Vizualizează probleme":
             st.subheader("Listă probleme")
             for p in sorted(data["problems"], key=lambda x: x["created_at"], reverse=True):
@@ -183,8 +162,6 @@ else:
                         del st.session_state['comment_problem']
                         st.experimental_rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
-
-        # Articole
         elif page == "Articole":
             st.subheader("Articole")
             for a in sorted(data["articles"], key=lambda x: x["created_at"], reverse=True):
@@ -192,9 +169,7 @@ else:
                 st.markdown(f"### {a['title']}")
                 st.write(a['content'])
                 st.markdown("</div>", unsafe_allow_html=True)
-
-        # Dashboard Admin
-        elif page == "Dashboard Admin":
+        else:  # Dashboard Admin
             st.subheader("Administrare conținut")
             st.write("Feature în curs de implementare...")
 
