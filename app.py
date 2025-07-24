@@ -90,8 +90,12 @@ if mode == "Register":
                 st.experimental_rerun()
 
 else:
-    # Login default (fără etichete suplimentare)
-    name, auth_status, username = authenticator.login("Login", "sidebar")
+    # Login default (etichete și locație corecte pentru streamlit-authenticator)
+    name, auth_status, username = authenticator.login(
+        "Username",   # eticheta câmpului pentru username
+        "Password",   # eticheta câmpului pentru parolă
+        "sidebar"     # poziția în bara laterală: main, sidebar sau unrendered
+    )
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
         pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
@@ -108,9 +112,13 @@ else:
             )
         # ... restul codului rămâne neschimbat pentru pagini
 
+        # Logout
         authenticator.logout("Logout", "sidebar")
 
     elif auth_status is False:
+        st.error("Username sau parola incorectă.")
+    else:
+        st.warning("Te rog loghează-te.")
         st.error("Username sau parola incorectă.")
     else:
         st.warning("Te rog loghează-te.")
