@@ -88,9 +88,9 @@ if mode == "Register":
                 save_data(data)
                 st.success("Înregistrare cu succes! Te poți loga acum.")
                 st.experimental_rerun()
-
 else:
-    name, auth_status, username = authenticator.login("Login", "main")
+    # Apelăm login cu parametrul location specificat explicit
+    name, auth_status, username = authenticator.login("Login", location="main")
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
         pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
