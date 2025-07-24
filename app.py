@@ -1,31 +1,8 @@
-import subprocess
-import sys
 import os
 import json
 from datetime import datetime
 import streamlit as st
-
-# --- ASIGURĂ DEPENDENȚELE ---
-# helper pentru import vs pip package name
-def ensure_package(import_name: str, pip_name: str = None):
-    try:
-        __import__(import_name)
-    except ImportError:
-        pkg = pip_name or import_name
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-
-# listează pachete cu mapping import_name -> pip_name
-packages = [
-    ("streamlit", None),
-    ("streamlit_authenticator", "streamlit-authenticator"),
-    ("bcrypt", None)
-]
-for imp, pip in packages:
-    ensure_package(imp, pip)
-
-# acum importă autentificator și bcrypt
 from streamlit_authenticator import Authenticate, Hasher
-import bcrypt
 
 # --- CONFIG STREAMLIT & STILIZARE ---
 st.set_page_config(
@@ -60,6 +37,9 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+# Încurajare: instalează dependențele cu pip înainte de rulare:
+# pip install streamlit streamlit-authenticator bcrypt
 
 data = load_data()
 
@@ -169,7 +149,7 @@ else:
                 st.markdown(f"### {a['title']}")
                 st.write(a['content'])
                 st.markdown("</div>", unsafe_allow_html=True)
-        else:  # Dashboard Admin
+        else:
             st.subheader("Administrare conținut")
             st.write("Feature în curs de implementare...")
 
