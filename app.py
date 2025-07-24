@@ -5,18 +5,18 @@ import streamlit as st
 from streamlit_authenticator import Authenticate, Hasher
 
 # Pentru Streamlit Community Cloud:
-# - Creează un fișier requirements.txt în același director cu:
-#     streamlit
-#     streamlit-authenticator
-#     bcrypt
-# - Commit‐ează‐l în repo și Streamlit va instala automat dependențele.
+# Creează un fișier requirements.txt cu:
+# streamlit
+# streamlit-authenticator
+# bcrypt
+# și commit-ează-l în repo - dependențele se instalează automat.
 
 # --- CONFIG STREAMLIT & STILIZARE ---
 st.set_page_config(
     page_title="MatInfo Platform",
     page_icon="📐",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 st.markdown(
     """
@@ -24,14 +24,14 @@ st.markdown(
     body { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); }
     .card { background: #fff; padding: 1.5rem; margin: 1rem 0; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
     .stButton>button { background-color: #1f77b4; color: #fff; border-radius: 8px; padding: 0.5rem 1.5rem; font-weight: 600; }
-    .stButton>button:hover { background-color: #155d8b; transition: 0.2s; }
+    .stButton>button:hover { background-color: #155d8b; }
     .stTextInput input, .stTextArea textarea { border-radius: 8px; padding: 0.75rem; border: 1px solid #ccc; }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# --- SISTEM DE STORARE JSON ---
+# --- SISTEM DE STOCARE JSON ---
 DATA_FILE = "data.json"
 
 def load_data():
@@ -49,19 +49,20 @@ data = load_data()
 # --- AUTENTIFICARE & ÎNREGISTRARE ---
 mode = st.sidebar.selectbox("Mod", ["Login", "Register"])
 
-def get_credentials(users):
-    return {
-        "username": [u["username"] for u in users],
-        "name": [u["name"] for u in users],
-        "password": [u["hashed_password"] for u in users]
+# Construim structura de credentials conform streamlit-authenticator
+credentials = {"usernames": {}}
+for user in data["users"]:
+    credentials["usernames"][user["username"]] = {
+        "name": user["name"],
+        "password": user["hashed_password"]
     }
 
-credentials = get_credentials(data["users"])
+# Instanțiem authenticator
 authenticator = Authenticate(
     credentials,
     cookie_name="matinfo_session",
     key="random_key",
-    cookie_expiry_days=30,
+    cookie_expiry_days=30
 )
 
 if mode == "Register":
@@ -74,6 +75,7 @@ if mode == "Register":
             if any(u["username"] == new_username for u in data["users"]):
                 st.error("Username-ul există deja.")
             else:
+                # Hash parola nouă
                 hashed = Hasher([new_password]).generate()[0]
                 new_id = max((u["id"] for u in data["users"]), default=0) + 1
                 data["users"].append({
@@ -86,17 +88,23 @@ if mode == "Register":
                 save_data(data)
                 st.success("Înregistrare cu succes! Te poți loga acum.")
                 st.experimental_rerun()
+
 else:
     name, auth_status, username = authenticator.login("Login", "main")
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
         pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
+        # Adăugăm Dashboard Admin dacă userul e admin
         if any(u for u in data["users"] if u["username"] == username and u.get("is_admin")):
             pages.append("Dashboard Admin")
         page = st.sidebar.selectbox("Navigare", pages)
 
         if page == "Acasă":
-            st.markdown(f"<h2 style='text-align:center;'>Bine ai venit, <span style='color:#1f77b4;'>{name}</span>!</h2>", unsafe_allow_html=True)
+            st.markdown(
+                f"<h2 style='text-align:center;'>Bine ai venit, <span style='color:#1f77b4;'>{name}</span>!</h2>",
+                unsafe_allow_html=True
+            )
+
         elif page == "Propune problemă":
             st.subheader("Încarcă o problemă nouă")
             with st.form("upload_problem"):
@@ -118,11 +126,12 @@ else:
                     })
                     save_data(data)
                     st.success("Problemă încărcată cu succes!")
+
         elif page == "Vizualizează probleme":
             st.subheader("Listă probleme")
             for p in sorted(data["problems"], key=lambda x: x["created_at"], reverse=True):
                 st.markdown("<div class='card'>", unsafe_allow_html=True)
-                cols = st.columns([4,1,1])
+                cols = st.columns([4, 1, 1])
                 cols[0].markdown(f"**{p['title']}** (Clasa {p['grade']}, {p['difficulty']})")
                 vote_count = len([v for v in data["votes"] if v["problem_id"] == p["id"]])
                 comment_count = len([c for c in data["comments"] if c["problem_id"] == p["id"]])
@@ -144,6 +153,7 @@ else:
                         del st.session_state['comment_problem']
                         st.experimental_rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
+
         elif page == "Articole":
             st.subheader("Articole")
             for a in sorted(data["articles"], key=lambda x: x["created_at"], reverse=True):
@@ -151,11 +161,13 @@ else:
                 st.markdown(f"### {a['title']}")
                 st.write(a['content'])
                 st.markdown("</div>", unsafe_allow_html=True)
-        else:
+
+        else:  # Dashboard Admin
             st.subheader("Administrare conținut")
             st.write("Feature în curs de implementare...")
 
         authenticator.logout("Logout", "sidebar")
+
     elif auth_status is False:
         st.error("Username sau parola incorectă.")
     else:
