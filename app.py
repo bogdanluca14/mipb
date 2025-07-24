@@ -89,8 +89,8 @@ if mode == "Register":
                 st.experimental_rerun()
 
 else:
-    # Login în sidebar
-    name, auth_status, username = authenticator.login(username_label="Username", password_label="Password", location="sidebar")
+    # Login în sidebar cu argumetele posiționale corecte
+    name, auth_status, username = authenticator.login("Login", "sidebar")
     if auth_status:
         st.sidebar.success(f"Bine ai venit, {name}!")
         pages = ["Acasă", "Propune problemă", "Vizualizează probleme", "Articole"]
@@ -99,7 +99,10 @@ else:
         page = st.sidebar.selectbox("Navigare", pages)
 
         if page == "Acasă":
-            st.markdown(f"<h2 style='text-align:center;'>Bine ai venit, <span style='color:#1f77b4;'>{name}</span>!</h2>", unsafe_allow_html=True)
+            st.markdown(
+                f"<h2 style='text-align:center;'>Bine ai venit, <span style='color:#1f77b4;'>{name}</span>!</h2>",
+                unsafe_allow_html=True
+            )
 
         elif page == "Propune problemă":
             st.subheader("Încarcă o problemă nouă")
