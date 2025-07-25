@@ -1,4 +1,5 @@
 import streamlit as st
+import subprocess, os
 import json, os, hashlib, time
 from datetime import datetime
 from contextlib import redirect_stdout
@@ -78,7 +79,60 @@ def show_problem_detail(pid):
         st.subheader("Submit Solution")
         code_input = st.text_area("Your Python code:", height=200)
         if st.button("Run & Submit", key=f"submit_prog_{pid}"):
-            score, results, max_time = evaluate_program_submission(prob, code_input)
+                st.subheader("Submit Solution (C++)")
+    code_input = st.text_area("Your C++ code:", height=200)
+    if st.button("Compile & Submit", key=f"submit_cpp_{pid}"):
+        # 1) Salvează codul în fișier temporar
+        cpp_file = f"/tmp/sub{st.session_state.username}_{pid}.cpp"
+        exe_file = cpp_file.replace(".cpp", ".out")
+        with open(cpp_file, "w") as f:
+            f.write(code_input)
+
+        # 2) Compilează
+        comp = subprocess.run(
+            ["g++", cpp_file, "-O2", "-std=c++17", "-o", exe_file],
+            capture_output=True, text=True
+        )
+        if comp.returncode != 0:
+            st.error("Compilation Error:\n" + comp.stderr)
+        else:
+            # 3) Rulează testele
+            results = []
+            passed = 0
+            max_time = 0.0
+            for tc in prob["test_cases"]:
+                start = time.time()
+                proc = subprocess.run(
+                    [exe_file],
+                    input=tc["input"],
+                    text=True,
+                    capture_output=True,
+                    timeout=prob.get("time_limit", 2)
+                )
+                elapsed = time.time() - start
+                max_time = max(max_time, elapsed)
+                got = proc.stdout.strip().replace("\r", "")
+                exp = tc["output"].strip().replace("\r", "")
+                if proc.returncode != 0:
+                    verdict = "Runtime Error"
+                elif elapsed > prob.get("time_limit", 2):
+                    verdict = "Time Limit Exceeded"
+                elif got != exp:
+                    verdict = "Wrong Answer"
+                else:
+                    verdict = "Passed"
+                    passed += 1
+                results.append({
+                    "verdict": verdict,
+                    "time": round(elapsed, 3),
+                    "expected": tc["output"] if tc.get("public") else None,
+                    "output": proc.stdout if tc.get("public") else None
+                })
+            # 4) Calculează scor
+            total = len(prob["test_cases"])
+            score = int(passed * 100 / total)
+
+            # 5) Înregistrează submisia
             submission = {
                 "id": get_new_id(submissions),
                 "problem_id": pid,
@@ -88,15 +142,25 @@ def show_problem_detail(pid):
                 "results": results,
                 "timestamp": datetime.utcnow().isoformat(),
                 "time": round(max_time, 3),
-                "language": "python"
+                "language": "cpp"
             }
             record_submission(submission)
+
             st.success(f"Score: {score}")
             exp = st.expander("Details", expanded=True)
             for i, r in enumerate(results, 1):
                 exp.write(f"Test {i}: {r['verdict']} (time: {r['time']}s)")
                 if r["verdict"] != "Passed" and r.get("expected") is not None:
-                    exp.write(f"Expected: `{r['expected']}`\nGot: `{r['output'].strip()}`")
+                    exp.write(f"Expected: `{r['expected']}`")
+                    exp.write(f"Got: `{r['output'].strip()}`")
+
+        # 6) Curăță fișierele temporare
+        try:
+            os.remove(cpp_file)
+            os.remove(exe_file)
+        except OSError:
+            pass
+
 
     elif prob["type"] == "math":
         if prob.get("rubric"):
@@ -418,8 +482,8 @@ if st.session_state.page == "View Problem":
             if not st.session_state.logged_in:
                 st.info("Log in to submit a solution.")
             else:
-                st.subheader("Submit Solution")
-                code_input = st.text_area("Your Python code:", height=200)
+                st.subheader("Submit Solution (C++)")
+                code_input = st.text_area("Your C++ code:", height=200)
                 if st.button("Run & Submit"):
                     # Evaluate the code
                     score, results, max_time = evaluate_program_submission(problem, code_input)
