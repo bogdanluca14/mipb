@@ -51,6 +51,103 @@ submissions = load_json("submissions.json", default=[])
 articles = load_json("articles.json", default=[])
 comments = load_json("comments.json", default=[])
 
+# 1. Asigură‑te că există cheia în session_state
+if 'view_problem' not in st.session_state:
+    st.session_state['view_problem'] = None
+
+# 2. Definiția funcției care afișează detaliile problemei
+def show_problem_detail(pid):
+    prob = next((p for p in problems if p["id"] == pid), None)
+    if not prob:
+        st.error("Problem not found.")
+        return
+
+    st.title(prob["title"])
+    st.markdown(prob["statement"], unsafe_allow_html=True)
+
+    # --- logica ta de submit/evaluate pentru programming sau math ---
+    if prob["type"] == "programming":
+        # exemplu de test public
+        public_tests = [tc for tc in prob.get("test_cases",[]) if tc.get("public")]
+        if public_tests:
+            st.subheader("Example Tests")
+            for tc in public_tests:
+                st.text(f"Input:\n{tc['input']}")
+                st.text(f"Expected:\n{tc['output']}")
+
+        st.subheader("Submit Solution")
+        code_input = st.text_area("Your Python code:", height=200)
+        if st.button("Run & Submit", key=f"submit_prog_{pid}"):
+            score, results, max_time = evaluate_program_submission(prob, code_input)
+            submission = {
+                "id": get_new_id(submissions),
+                "problem_id": pid,
+                "user": st.session_state.username,
+                "code": code_input,
+                "score": score,
+                "results": results,
+                "timestamp": datetime.utcnow().isoformat(),
+                "time": round(max_time, 3),
+                "language": "python"
+            }
+            record_submission(submission)
+            st.success(f"Score: {score}")
+            exp = st.expander("Details", expanded=True)
+            for i, r in enumerate(results, 1):
+                exp.write(f"Test {i}: {r['verdict']} (time: {r['time']}s)")
+                if r["verdict"] != "Passed" and r.get("expected") is not None:
+                    exp.write(f"Expected: `{r['expected']}`\nGot: `{r['output'].strip()}`")
+
+    elif prob["type"] == "math":
+        if prob.get("rubric"):
+            st.subheader("Rubric")
+            for sec in prob["rubric"]:
+                st.write(f"- {sec['section']}: {sec['points']} pts")
+
+        if not st.session_state.logged_in:
+            st.info("Log in to submit a solution.")
+            return
+
+        st.subheader("Submit Solution")
+        answer = st.text_area("Your solution or answer:", height=150)
+        if st.button("Submit Answer", key=f"submit_math_{pid}"):
+            auto_score, feedback = evaluate_math_submission(prob, answer)
+            graded = auto_score is not None
+            score = auto_score if graded else 0
+            submission = {
+                "id": get_new_id(submissions),
+                "problem_id": pid,
+                "user": st.session_state.username,
+                "answer": answer,
+                "score": score,
+                "graded": graded,
+                "timestamp": datetime.utcnow().isoformat(),
+                "feedback": feedback
+            }
+            record_submission(submission)
+            if graded:
+                st.success(f"Auto-graded. Score: {score}")
+            else:
+                st.info("Submitted for manual review.")
+
+        user_subs = [s for s in submissions if s["problem_id"]==pid and s["user"]==st.session_state.username and s.get("graded")]
+        if user_subs:
+            latest = sorted(user_subs, key=lambda s: s["timestamp"], reverse=True)[0]
+            st.subheader("Graded Result")
+            total_pts = sum(sec["points"] for sec in prob.get("rubric", []))
+            st.write(f"Score: {latest['score']} / {total_pts}")
+            if prob.get("rubric"):
+                st.write("Rubric Breakdown:")
+                for sec in prob["rubric"]:
+                    pts = sec["points"] if latest["score"]==total_pts else 0
+                    st.write(f"- {sec['section']}: {pts}/{sec['points']}")
+
+# 3. Verifică și intră direct în «View Problem» și oprește restul
+if st.session_state['view_problem'] is not None:
+    show_problem_detail(st.session_state['view_problem'])
+    st.stop()
+
+
 # ---------- Helper functions for app logic ----------
 def hash_password(password: str) -> str:
     """Hash a password for storage."""
@@ -278,8 +375,7 @@ if st.session_state.page == "Problems":
             st.markdown(problem_line)
             if st.button(f"Open {p['title']}", key=f"open{p['id']}"):
                 st.session_state.view_problem = p["id"]
-                st.session_state.page = "View Problem"
-                st.rerun()
+                on_click=lambda pid=p['id']: st.session_state.update({"view_problem": pid})
     if math_probs:
         st.subheader("Math Problems")
         for p in math_probs:
@@ -295,8 +391,7 @@ if st.session_state.page == "Problems":
             st.markdown(problem_line)
             if st.button(f"Open {p['title']}", key=f"open{p['id']}"):
                 st.session_state.view_problem = p["id"]
-                st.session_state.page = "View Problem"
-                st.rerun()
+                on_click=lambda pid=p['id']: st.session_state.update({"view_problem": pid})
     if not problems:
         st.write("No problems available yet.")
 
