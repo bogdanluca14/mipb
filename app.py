@@ -189,6 +189,11 @@ def show_problem_detail(pid):
     if not prob:
         st.error("Problem not found.")
         return
+
+    if st.button("🔙 Back to Problems"):
+        st.session_state['view_problem'] = None
+        return
+        
     st.title(prob["title"])
     # Display problem statement (support Markdown/HTML content)
     st.markdown(prob["statement"], unsafe_allow_html=True)
