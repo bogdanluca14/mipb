@@ -1,34 +1,47 @@
 import streamlit as st
 import subprocess, os
-import json, os, hashlib, time
+import json, hashlib, time
 from datetime import datetime
 from contextlib import redirect_stdout
 import io
 
+try:
+    # Importă editorul Ace pentru cod (dacă nu este instalat, se va instala automat)
+    from streamlit_ace import st_ace
+except ImportError:
+    st.write('Installing streamlit-ace for code editor...')
+    subprocess.run(['pip', 'install', 'streamlit-ace'], capture_output=True, text=True)
+    from streamlit_ace import st_ace
+
 # ---------- Configuration: Page setup and theming ----------
 st.set_page_config(page_title="MatInfo Platform", layout="wide")
-# Dark theme via custom CSS (since we want a specific look)
-dark_css = """
+# Dark theme via custom CSS
+dark_css = '''
 <style>
 body, .stApp {
     background-color: #1e1e1e;
     color: #e0e0e0;
 }
 /* Style sidebar */
-.stSidebar, .css-6awftf.egzxvld2 { /* the second class targets sidebar content */
+.stSidebar, .css-6awftf.egzxvld2 {
     background-color: #2b2b2b;
 }
-/* Style primary colored elements (like buttons, selectboxes) */
+/* Style primary colored elements (e.g., buttons, selectboxes) */
 .css-1fv8s86 {
-    background-color: #264F78 !important; /* a dark blue tone for buttons */
+    background-color: #264F78 !important;
     color: #FFFFFF !important;
 }
+/* Monospace font for text areas (code inputs) */
+textarea {
+    font-family: "Source Code Pro", monospace;
+    font-size: 0.9rem;
+}
 </style>
-"""
+'''
 st.markdown(dark_css, unsafe_allow_html=True)
 
 # ---------- Utility functions for data persistence ----------
-DATA_DIR = "."  # current directory
+DATA_DIR = "."
 def load_json(filename, default):
     filepath = os.path.join(DATA_DIR, filename)
     if os.path.exists(filepath):
@@ -52,126 +65,207 @@ submissions = load_json("submissions.json", default=[])
 articles = load_json("articles.json", default=[])
 comments = load_json("comments.json", default=[])
 
-# 1. Asigură‑te că există cheia în session_state
+# Ensure session state keys
 if 'view_problem' not in st.session_state:
     st.session_state['view_problem'] = None
 
-# 2. Definiția funcției care afișează detaliile problemei
+# ---------- Helper functions for app logic ----------
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
+def check_password(password: str, hashed: str) -> bool:
+    return hash_password(password) == hashed
+
+def get_new_id(list_of_dicts):
+    if not list_of_dicts:
+        return 1
+    else:
+        max_id = max(item.get("id", 0) for item in list_of_dicts)
+        return max_id + 1
+
+def ensure_admin_exists():
+    # Ensure there's at least one admin user
+    admin_exists = any(u['role'] == 'admin' for u in users)
+    if not admin_exists:
+        default_admin = {"id": get_new_id(users), "username": "admin", "password": hash_password("admin"), "role": "admin"}
+        users.append(default_admin)
+        save_json("users.json", users)
+ensure_admin_exists()
+
+def record_submission(submission):
+    submissions.append(submission)
+    save_json("submissions.json", submissions)
+
+def get_user_by_username(username):
+    return next((u for u in users if u["username"] == username), None)
+
+def evaluate_math_submission(problem, answer):
+    # Evaluate math answer if auto-check is possible
+    if problem.get("expected_answer") is not None:
+        if str(answer).strip() == str(problem["expected_answer"]).strip():
+            total = sum(section["points"] for section in problem.get("rubric", []))
+            return total, "Correct answer"
+        else:
+            return 0, "Incorrect answer"
+    return None, "Pending manual grading"
+
+# Function to compile and run C++ code for programming problems
+def compile_and_run_cpp(problem, code_str):
+    """
+    Compile the given C++ code and run it against all test cases of the problem.
+    Returns (score, results_list, max_time, compile_error).
+    """
+    # Save code to a temporary file
+    username = st.session_state.get('username', 'guest')
+    pid = problem["id"]
+    cpp_file = f"/tmp/sub_{username}_{pid}.cpp"
+    exe_file = cpp_file.replace(".cpp", ".out")
+    with open(cpp_file, "w") as f:
+        f.write(code_str)
+    # Compile the C++ code
+    comp = subprocess.run(["g++", cpp_file, "-O2", "-std=c++17", "-o", exe_file],
+                          capture_output=True, text=True)
+    if comp.returncode != 0:
+        # Compilation failed
+        compile_error = comp.stderr
+        try:
+            os.remove(cpp_file)
+        except OSError:
+            pass
+        return 0, [], 0.0, compile_error
+    # If compiled successfully, run through test cases
+    results = []
+    passed_count = 0
+    max_time = 0.0
+    time_limit = problem.get("time_limit", 2)
+    for tc in problem.get("test_cases", []):
+        inp = tc["input"]
+        expected_output = tc["output"].strip().replace("\r", "")
+        start_time = time.time()
+        try:
+            proc = subprocess.run([exe_file], input=inp, text=True, capture_output=True, timeout=time_limit)
+            elapsed = time.time() - start_time
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - start_time
+            results.append({
+                "verdict": "Time Limit Exceeded",
+                "time": round(elapsed, 3),
+                "expected": tc["output"] if tc.get("public") else None,
+                "output": None
+            })
+            continue
+        max_time = max(max_time, elapsed)
+        output = proc.stdout.strip().replace("\r", "")
+        verdict = ""
+        if proc.returncode != 0:
+            verdict = "Runtime Error"
+        elif elapsed > time_limit:
+            verdict = "Time Limit Exceeded"
+        elif output != expected_output:
+            verdict = "Wrong Answer"
+        else:
+            verdict = "Passed"
+            passed_count += 1
+        results.append({
+            "verdict": verdict,
+            "time": round(elapsed, 3),
+            "expected": tc["output"] if tc.get("public") else None,
+            "output": proc.stdout if tc.get("public") else None
+        })
+    # Compute score
+    total_tests = len(problem.get("test_cases", []))
+    score = int(passed_count * 100 / total_tests) if total_tests > 0 else 0
+    # Cleanup temporary files
+    try:
+        os.remove(cpp_file)
+        os.remove(exe_file)
+    except OSError:
+        pass
+    return score, results, round(max_time, 3), None
+
+# ---------- Function to display problem details ----------
 def show_problem_detail(pid):
     prob = next((p for p in problems if p["id"] == pid), None)
     if not prob:
         st.error("Problem not found.")
         return
-
     st.title(prob["title"])
+    # Display problem statement (support Markdown/HTML content)
     st.markdown(prob["statement"], unsafe_allow_html=True)
-
-    # --- logica ta de submit/evaluate pentru programming sau math ---
     if prob["type"] == "programming":
-        # exemplu de test public
-        public_tests = [tc for tc in prob.get("test_cases",[]) if tc.get("public")]
+        # Show example tests (public only)
+        public_tests = [tc for tc in prob.get("test_cases", []) if tc.get("public")]
         if public_tests:
             st.subheader("Example Tests")
             for tc in public_tests:
-                st.text(f"Input:\n{tc['input']}")
-                st.text(f"Expected:\n{tc['output']}")
-
-        st.subheader("Submit Solution")
-        code_input = st.text_area("Your Python code:", height=200)
-        if st.button("Run & Submit", key=f"submit_prog_{pid}"):
-                st.subheader("Submit Solution (C++)")
-    code_input = st.text_area("Your C++ code:", height=200)
-    if st.button("Compile & Submit", key=f"submit_cpp_{pid}"):
-        # 1) Salvează codul în fișier temporar
-        cpp_file = f"/tmp/sub{st.session_state.username}_{pid}.cpp"
-        exe_file = cpp_file.replace(".cpp", ".out")
-        with open(cpp_file, "w") as f:
-            f.write(code_input)
-
-        # 2) Compilează
-        comp = subprocess.run(
-            ["g++", cpp_file, "-O2", "-std=c++17", "-o", exe_file],
-            capture_output=True, text=True
+                st.markdown("**Input:**")
+                st.code(tc['input'], language='text')
+                st.markdown("**Expected Output:**")
+                st.code(tc['output'], language='text')
+        # Submission form for programming problem
+        if not st.session_state.get('logged_in'):
+            st.info("Log in to submit a solution.")
+            return
+        st.subheader("Submit Solution (C++)")
+        # ACE code editor for C++ (with syntax highlighting)
+        code_input = st_ace(
+            value = st.session_state.get(f"code_{pid}", ""),
+            language = "c_cpp",
+            theme = "pastel_on_dark",
+            auto_update = True,
+            min_lines = 15,
+            max_lines = 30,
+            key = f"ace_{pid}"
         )
-        if comp.returncode != 0:
-            st.error("Compilation Error:\n" + comp.stderr)
-        else:
-            # 3) Rulează testele
-            results = []
-            passed = 0
-            max_time = 0.0
-            for tc in prob["test_cases"]:
-                start = time.time()
-                proc = subprocess.run(
-                    [exe_file],
-                    input=tc["input"],
-                    text=True,
-                    capture_output=True,
-                    timeout=prob.get("time_limit", 2)
-                )
-                elapsed = time.time() - start
-                max_time = max(max_time, elapsed)
-                got = proc.stdout.strip().replace("\r", "")
-                exp = tc["output"].strip().replace("\r", "")
-                if proc.returncode != 0:
-                    verdict = "Runtime Error"
-                elif elapsed > prob.get("time_limit", 2):
-                    verdict = "Time Limit Exceeded"
-                elif got != exp:
-                    verdict = "Wrong Answer"
+        if code_input is not None:
+            st.session_state[f"code_{pid}"] = code_input
+        if st.button("Compile & Submit", key=f"submit_cpp_{pid}"):
+            if not code_input or code_input.strip() == "":
+                st.error("Please enter your C++ code before submitting.")
+            else:
+                score, results, max_time, compile_err = compile_and_run_cpp(prob, code_input)
+                if compile_err:
+                    st.error(f"Compilation Error:\n{compile_err}")
                 else:
-                    verdict = "Passed"
-                    passed += 1
-                results.append({
-                    "verdict": verdict,
-                    "time": round(elapsed, 3),
-                    "expected": tc["output"] if tc.get("public") else None,
-                    "output": proc.stdout if tc.get("public") else None
-                })
-            # 4) Calculează scor
-            total = len(prob["test_cases"])
-            score = int(passed * 100 / total)
-
-            # 5) Înregistrează submisia
-            submission = {
-                "id": get_new_id(submissions),
-                "problem_id": pid,
-                "user": st.session_state.username,
-                "code": code_input,
-                "score": score,
-                "results": results,
-                "timestamp": datetime.utcnow().isoformat(),
-                "time": round(max_time, 3),
-                "language": "cpp"
-            }
-            record_submission(submission)
-
-            st.success(f"Score: {score}")
-            exp = st.expander("Details", expanded=True)
-            for i, r in enumerate(results, 1):
-                exp.write(f"Test {i}: {r['verdict']} (time: {r['time']}s)")
-                if r["verdict"] != "Passed" and r.get("expected") is not None:
-                    exp.write(f"Expected: `{r['expected']}`")
-                    exp.write(f"Got: `{r['output'].strip()}`")
-
-        # 6) Curăță fișierele temporare
-        try:
-            os.remove(cpp_file)
-            os.remove(exe_file)
-        except OSError:
-            pass
-
-
+                    # Record the submission
+                    submission = {
+                        "id": get_new_id(submissions),
+                        "problem_id": pid,
+                        "user": st.session_state.get('username'),
+                        "code": code_input,
+                        "score": score,
+                        "results": results,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "time": max_time,
+                        "language": "cpp"
+                    }
+                    record_submission(submission)
+                    st.success(f"Score: {score}")
+                    detail_expander = st.expander("Details", expanded=True)
+                    for i, res in enumerate(results, start=1):
+                        verdict = res['verdict']
+                        t = res['time']
+                        detail_expander.write(f"Test {i}: {verdict} (Time: {t}s)")
+                        if verdict != "Passed" and res.get('expected') is not None:
+                            detail_expander.write(f"Expected: `{res['expected']}`")
+                            got_out = res.get('output', '')
+                            if got_out is None:
+                                got_out = ""
+                            got_out_str = got_out.strip()
+                            if len(got_out_str) > 300:
+                                got_out_display = got_out_str[:300] + "..."
+                            else:
+                                got_out_display = got_out_str
+                            detail_expander.write(f"Got: `{got_out_display}`")
     elif prob["type"] == "math":
+        # Display rubric if available
         if prob.get("rubric"):
             st.subheader("Rubric")
             for sec in prob["rubric"]:
                 st.write(f"- {sec['section']}: {sec['points']} pts")
-
-        if not st.session_state.logged_in:
+        if not st.session_state.get('logged_in'):
             st.info("Log in to submit a solution.")
             return
-
         st.subheader("Submit Solution")
         answer = st.text_area("Your solution or answer:", height=150)
         if st.button("Submit Answer", key=f"submit_math_{pid}"):
@@ -181,7 +275,7 @@ def show_problem_detail(pid):
             submission = {
                 "id": get_new_id(submissions),
                 "problem_id": pid,
-                "user": st.session_state.username,
+                "user": st.session_state.get('username'),
                 "answer": answer,
                 "score": score,
                 "graded": graded,
@@ -193,8 +287,8 @@ def show_problem_detail(pid):
                 st.success(f"Auto-graded. Score: {score}")
             else:
                 st.info("Submitted for manual review.")
-
-        user_subs = [s for s in submissions if s["problem_id"]==pid and s["user"]==st.session_state.username and s.get("graded")]
+        # If a graded submission exists, show the latest result
+        user_subs = [s for s in submissions if s["problem_id"] == pid and s["user"] == st.session_state.get('username') and s.get("graded")]
         if user_subs:
             latest = sorted(user_subs, key=lambda s: s["timestamp"], reverse=True)[0]
             st.subheader("Graded Result")
@@ -203,159 +297,40 @@ def show_problem_detail(pid):
             if prob.get("rubric"):
                 st.write("Rubric Breakdown:")
                 for sec in prob["rubric"]:
-                    pts = sec["points"] if latest["score"]==total_pts else 0
-                    st.write(f"- {sec['section']}: {pts}/{sec['points']}")
+                    pts_earned = sec["points"] if latest["score"] == total_pts else 0
+                    st.write(f"- {sec['section']}: {pts_earned}/{sec['points']}")
 
-# 3. Verifică și intră direct în «View Problem» și oprește restul
+# If a problem is selected, show its detail and stop other content
 if st.session_state['view_problem'] is not None:
     show_problem_detail(st.session_state['view_problem'])
     st.stop()
 
-
-# ---------- Helper functions for app logic ----------
-def hash_password(password: str) -> str:
-    """Hash a password for storage."""
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
-
-def check_password(password: str, hashed: str) -> bool:
-    return hash_password(password) == hashed
-
-def get_new_id(list_of_dicts):
-    """Generate a new ID (int) for an item in a list of dicts with 'id' field."""
-    if not list_of_dicts:
-        return 1
-    else:
-        max_id = max(item.get("id", 0) for item in list_of_dicts)
-        return max_id + 1
-
-def ensure_admin_exists():
-    """Ensure there's at least one admin user. Create a default admin if none exist."""
-    admin_exists = any(u['role'] == 'admin' for u in users)
-    if not admin_exists:
-        default_admin = {"id": get_new_id(users), "username": "admin", "password": hash_password("admin"), "role": "admin"}
-        users.append(default_admin)
-        save_json("users.json", users)
-ensure_admin_exists()  # Create default admin if needed
-
-def record_submission(submission):
-    submissions.append(submission)
-    save_json("submissions.json", submissions)
-
-def get_user_by_username(username):
-    return next((u for u in users if u["username"] == username), None)
-
-# Functions to run and evaluate code
-def run_code_in_sandbox(code, input_data):
-    """Run user code with given input_data (list of input lines). Return output and success flag."""
-    output_buffer = io.StringIO()
-    # Prepare a restricted execution environment
-    # Disable builtins for safety except a few
-    allowed_builtins = {"__build_class__": __build_class__, "__name__": "__main__"}  # minimally required to exec
-    # We allow basic builtins usage by adding safe ones:
-    safe_funcs = {"range": range, "len": len, "print": print}
-    allowed_builtins.update(safe_funcs)
-    # Monkey patch input() if needed:
-    input_iter = iter(input_data)
-    def safe_input(prompt=""):
-        try:
-            return next(input_iter)
-        except StopIteration:
-            return ""
-    allowed_builtins["input"] = safe_input
-    # Execute the code
-    success = True
-    error_msg = ""
-    start_time = time.time()
-    try:
-        with redirect_stdout(output_buffer):
-            exec(code, {"__builtins__": allowed_builtins}, {})
-    except Exception as e:
-        success = False
-        error_msg = str(e)
-    exec_time = time.time() - start_time
-    output = output_buffer.getvalue()
-    if error_msg:
-        output += ("\nError: " + error_msg)
-    return output, exec_time, success
-
-def evaluate_program_submission(problem, code):
-    """Run the user's code on all test cases of the given programming problem."""
-    test_results = []
-    all_passed = True
-    total_time = 0.0
-    for case in problem["test_cases"]:
-        # Run on each test case input; assume input_data is list of lines (split by newline)
-        input_data = case["input"].splitlines(keepends=True)
-        output, exec_time, success = run_code_in_sandbox(code, input_data)
-        total_time = max(total_time, exec_time)  # track max time used
-        expected = case["output"].strip()
-        got = output.strip()
-        if not success:
-            verdict = "Runtime Error"
-            all_passed = False
-        elif exec_time > problem.get("time_limit", 2):  # default 2s if not set
-            verdict = "Time Limit Exceeded"
-            all_passed = False
-        elif got == expected:
-            verdict = "Passed"
-        else:
-            verdict = "Wrong Answer"
-            all_passed = False
-        test_results.append({
-            "input": case["input"] if case.get("public") else None,  # don't store private input
-            "expected": case["output"] if case.get("public") else None,
-            "output": output,
-            "verdict": verdict,
-            "time": round(exec_time, 3)
-        })
-    # Calculate score (if all passed, 100; else proportional to passed tests)
-    passed_tests = sum(1 for r in test_results if r["verdict"] == "Passed")
-    total_tests = len(test_results)
-    score = int(passed_tests * 100 / total_tests)
-    return score, test_results, total_time
-
-def evaluate_math_submission(problem, answer):
-    """Evaluate math answer if auto-check possible. Returns score and feedback."""
-    if problem.get("expected_answer") is not None:
-        # Simple check: compare stripped answer strings
-        if str(answer).strip() == str(problem["expected_answer"]).strip():
-            # Give full points for whatever rubric section corresponds to correct answer
-            total = sum(section["points"] for section in problem.get("rubric", []))
-            return total, "Correct answer"
-        else:
-            return 0, "Incorrect answer"
-    # If no auto evaluation, return None indicating needs manual grading
-    return None, "Pending manual grading"
-
-# ---------- Session State Initialization ----------
-if "logged_in" not in st.session_state:
+# ---------- Session State Initialization for user auth ----------
+if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = None
     st.session_state.role = None
 
-if "page" not in st.session_state:
-    st.session_state.page = "Home"
+if 'page' not in st.session_state:
+    st.session_state.page = 'Home'
 
 # Navigation menu in sidebar
 menu_options = ["Home", "Problems", "Articles"]
 if st.session_state.logged_in:
     if st.session_state.role in ("editor", "admin"):
         menu_options.append("Create Problem")
-    if st.session_state.role in ("editor", "admin"):
         menu_options.append("Admin Panel")
     menu_options.append("My Submissions")
     menu_options.append("Logout")
 else:
     menu_options.append("Login / Register")
-
 st.sidebar.title("MatInfo")
 choice = st.sidebar.selectbox("Menu", menu_options, index=0)
-# Handle menu choice logic:
 if choice == "Logout":
     st.session_state.logged_in = False
     st.session_state.username = None
     st.session_state.role = None
-    st.rerun()  # refresh to show logged-out menu (we use rerun on logout for immediate effect)
+    st.experimental_rerun()
 elif choice == "Login / Register":
     st.session_state.page = "Login"
 elif choice == "Home":
@@ -374,12 +349,11 @@ elif choice == "My Submissions":
 # ---------- Page: Home ----------
 if st.session_state.page == "Home":
     st.title("MatInfo – Educational Platform")
-    st.write("Welcome to MatInfo! This platform allows students to practice informatics (programming) and math problems. Please login or register to get started.")
-    # Basic info or announcements
+    st.write("Welcome to MatInfo! This platform allows students to practice programming and math problems. Please login or register to get started.")
     if articles:
         st.subheader("Latest Article")
         latest_article = sorted(articles, key=lambda x: x["date"], reverse=True)[0]
-        st.write(f"**{latest_article['title']}**  \n_by {latest_article['author']}_  \n{latest_article['content'][:200]}... [Read more](#)")  # truncated preview
+        st.write(f"**{latest_article['title']}**  \n_by {latest_article['author']}_  \n{latest_article['content'][:200]}... [Read more](#)")
     else:
         st.write("*No articles yet.*")
 
@@ -398,7 +372,7 @@ if st.session_state.page == "Login":
             st.session_state.role = user["role"]
             st.success(f"Welcome, {username}!")
             st.session_state.page = "Home"
-            st.rerun()
+            st.experimental_rerun()
         else:
             st.error("Invalid username or password")
     st.markdown("---")
@@ -413,33 +387,36 @@ if st.session_state.page == "Login":
         elif new_user == "" or new_pass == "":
             st.error("Username/password cannot be empty.")
         else:
-            new_entry = {"id": get_new_id(users), "username": new_user, "password": hash_password(new_pass), "role": "elev"}  # elev = student
+            new_entry = {
+                "id": get_new_id(users),
+                "username": new_user,
+                "password": hash_password(new_pass),
+                "role": "elev"  # 'elev' = student
+            }
             users.append(new_entry)
             save_json("users.json", users)
             st.success("Registration successful! You can now login.")
 
-# ---------- Page: Problems (List & Detail) ----------
+# ---------- Page: Problems (List) ----------
 if st.session_state.page == "Problems":
     st.title("Problems")
-    # Show list of problems grouped by type
     info_probs = [p for p in problems if p["type"] == "programming"]
     math_probs = [p for p in problems if p["type"] == "math"]
     if info_probs:
         st.subheader("Informatics Problems")
         for p in info_probs:
-            score = None
+            best_score = None
             if st.session_state.logged_in:
-                # show user's score if any submission
                 subs = [s for s in submissions if s["problem_id"] == p["id"] and s["user"] == st.session_state.username]
                 if subs:
-                    score = max(s["score"] for s in subs)
-            problem_line = f"**{p['title']}**"
-            if score is not None:
-                problem_line += f" – *Your best score: {score}*"
-            st.markdown(problem_line)
-            if st.button(f"Open {p['title']}", key=f"open{p['id']}"):
+                    best_score = max(s["score"] for s in subs)
+            line = f"**{p['title']}**"
+            if best_score is not None:
+                line += f" – *Your best score: {best_score}*"
+            st.markdown(line)
+            if st.button(f"Open {p['title']}", key=f"open_prob_{p['id']}"):
                 st.session_state.view_problem = p["id"]
-                on_click=lambda pid=p['id']: st.session_state.update({"view_problem": pid})
+                st.experimental_rerun()
     if math_probs:
         st.subheader("Math Problems")
         for p in math_probs:
@@ -448,123 +425,24 @@ if st.session_state.page == "Problems":
                 subs = [s for s in submissions if s["problem_id"] == p["id"] and s["user"] == st.session_state.username]
                 if subs:
                     last_sub = sorted(subs, key=lambda s: s["timestamp"], reverse=True)[0]
-                    status = "Graded: " + str(last_sub["score"]) + "/" + str(sum(sec['points'] for sec in p.get("rubric", []))) if last_sub.get("graded") else "Pending grading"
-            problem_line = f"**{p['title']}**"
+                    if last_sub.get("graded"):
+                        total_pts = sum(sec['points'] for sec in p.get("rubric", []))
+                        status = f"Graded: {last_sub['score']}/{total_pts}"
+                    else:
+                        status = "Pending grading"
+            line = f"**{p['title']}**"
             if status:
-                problem_line += f" – *{status}*"
-            st.markdown(problem_line)
-            if st.button(f"Open {p['title']}", key=f"open{p['id']}"):
+                line += f" – *{status}*"
+            st.markdown(line)
+            if st.button(f"Open {p['title']}", key=f"open_prob_{p['id']}"):
                 st.session_state.view_problem = p["id"]
-                on_click=lambda pid=p['id']: st.session_state.update({"view_problem": pid})
+                st.experimental_rerun()
     if not problems:
         st.write("No problems available yet.")
 
-# View a specific problem (either programming or math)
-if st.session_state.page == "View Problem":
-    # Find the problem by id
-    prob_id = st.session_state.view_problem
-    problem = next((p for p in problems if p["id"] == prob_id), None)
-    if not problem:
-        st.error("Problem not found.")
-    else:
-        st.title(problem["title"])
-        # Display statement (render LaTeX if present)
-        st.write(problem["statement"], unsafe_allow_html=True)
-        if problem["type"] == "programming":
-            # If any public test cases, show them as examples
-            public_tests = [tc for tc in problem.get("test_cases", []) if tc.get("public")]
-            if public_tests:
-                st.subheader("Example Tests")
-                for tc in public_tests:
-                    st.text(f"Input:\n{tc['input']}")
-                    st.text(f"Expected Output:\n{tc['output']}")
-            # Code submission form
-            if not st.session_state.logged_in:
-                st.info("Log in to submit a solution.")
-            else:
-                st.subheader("Submit Solution (C++)")
-                code_input = st.text_area("Your C++ code:", height=200)
-                if st.button("Run & Submit"):
-                    # Evaluate the code
-                    score, results, max_time = evaluate_program_submission(problem, code_input)
-                    # Record submission
-                    submission = {
-                        "id": get_new_id(submissions),
-                        "problem_id": problem["id"],
-                        "user": st.session_state.username,
-                        "code": code_input,
-                        "score": score,
-                        "results": results,
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "time": round(max_time, 3),
-                        "language": "python"
-                    }
-                    record_submission(submission)
-                    # Display results
-                    st.success(f"Submission evaluated. Score: **{score}**")
-                    exp = st.expander("Details", expanded=True)
-                    for idx, res in enumerate(results, start=1):
-                        verdict = res["verdict"]
-                        t = res["time"]
-                        exp.write(f"**Test {idx}:** {verdict} (Time: {t}s)")
-                        if res["verdict"] != "Passed":
-                            # If it's a public test or user code failed, show expected vs got for debugging
-                            if res.get("expected") is not None:
-                                exp.write(f"Expected: `{res['expected']}`")
-                                exp.write(f"Got: `{res['output'].strip()}`")
-        elif problem["type"] == "math":
-            # Show rubric breakdown (without points filled) as info to user
-            if "rubric" in problem:
-                st.subheader("Rubric")
-                for sec in problem["rubric"]:
-                    st.write(f"- {sec['section']}: **{sec['points']}** points")
-            # Solution submission
-            if not st.session_state.logged_in:
-                st.info("Log in to submit a solution.")
-            else:
-                st.subheader("Submit Solution")
-                answer = st.text_area("Your solution or answer (you can use LaTeX for formulas):", height=150)
-                if st.button("Submit Answer"):
-                    # Create submission entry
-                    score = 0
-                    graded = False
-                    feedback = ""
-                    if problem.get("expected_answer") is not None:
-                        auto_score, feedback = evaluate_math_submission(problem, answer)
-                        if auto_score is not None:
-                            score = auto_score
-                            graded = True  # auto graded
-                    submission = {
-                        "id": get_new_id(submissions),
-                        "problem_id": problem["id"],
-                        "user": st.session_state.username,
-                        "answer": answer,
-                        "score": score,
-                        "graded": graded,
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "feedback": feedback
-                    }
-                    record_submission(submission)
-                    if graded:
-                        st.success(f"Your answer was auto-graded. Score: {score}")
-                    else:
-                        st.info("Your solution has been submitted for review. It will be graded by an editor.")
-                # If the user has a graded submission, allow them to view the graded rubric
-                user_subs = [s for s in submissions if s["problem_id"] == problem["id"] and s["user"] == st.session_state.username and s.get("graded")]
-                if user_subs:
-                    latest = sorted(user_subs, key=lambda s: s["timestamp"], reverse=True)[0]
-                    if latest.get("graded"):
-                        st.subheader("Graded Result")
-                        st.write(f"**Score:** {latest['score']} out of {sum(sec['points'] for sec in problem.get('rubric', []))}")
-                        if problem.get("rubric"):
-                            st.write("**Rubric Breakdown:**")
-                            # If we had stored per-section points, we would display them. For simplicity, assume full or zero for auto.
-                            for sec in problem["rubric"]:
-                                # If we had detailed grading info, we'd use it. Here we infer if full score given for correct answer.
-                                pts_earned = sec["points"] if latest["score"] == sum(sec['points'] for sec in problem["rubric"]) else 0
-                                st.write(f"- {sec['section']}: {pts_earned} / {sec['points']}")
+# (The selected problem detail view is handled above by show_problem_detail)
 
-# ---------- Page: Create Problem (Editors only) ----------
+# ---------- Page: Create Problem ----------
 if st.session_state.page == "Create Problem":
     if not st.session_state.logged_in or st.session_state.role not in ("editor", "admin"):
         st.error("Access denied. Editors or admins only.")
@@ -572,38 +450,32 @@ if st.session_state.page == "Create Problem":
         st.title("Create New Problem")
         problem_type = st.selectbox("Problem Type", ["programming", "math"])
         title = st.text_input("Problem Title")
-        statement = st.text_area("Problem Statement (you can use Markdown/LaTeX)")
+        statement = st.text_area("Problem Statement (Markdown/LaTeX supported)")
         if problem_type == "programming":
             time_limit = st.number_input("Time limit (seconds)", value=2.0)
             memory_limit = st.number_input("Memory limit (MB)", value=256)
-            # Enter test cases:
             st.subheader("Test Cases")
-            # We allow adding multiple testcases dynamically
-            if "new_testcases" not in st.session_state:
+            if 'new_testcases' not in st.session_state:
                 st.session_state.new_testcases = []
-            # Interface to add a new test
-            new_in = st.text_area("Input for a new test case")
-            new_out = st.text_area("Expected output for the new test case")
-            public_flag = st.checkbox("This test is public (visible to users)", value=False)
+            new_in = st.text_area("Input for new test case")
+            new_out = st.text_area("Expected output for new test case")
+            public_flag = st.checkbox("Public test (visible to users)", value=False)
             if st.button("Add Test Case"):
-                if new_in and new_out:
-                    st.session_state.new_testcases.append({"input": new_in, "output": new_out, "public": public_flag})
-                    # Clear fields
-                    st.rerun()
-                else:
+                if new_in.strip() == "" or new_out.strip() == "":
                     st.warning("Please provide both input and output for the test case.")
-            # Display current test cases list
+                else:
+                    st.session_state.new_testcases.append({"input": new_in, "output": new_out, "public": public_flag})
+                    st.experimental_rerun()
             if st.session_state.new_testcases:
                 st.write("Current test cases:")
                 for i, tc in enumerate(st.session_state.new_testcases, start=1):
                     vis = "Public" if tc["public"] else "Private"
                     st.write(f"{i}. ({vis}) Input: `{tc['input'][:30]}...`, Output: `{tc['output'][:30]}...`")
-            submitted = st.button("Create Problem")
-            if submitted:
-                if title == "" or statement == "" or not st.session_state.new_testcases:
+            if st.button("Create Problem"):
+                if title.strip() == "" or statement.strip() == "" or not st.session_state.new_testcases:
                     st.error("Title, statement, and at least one test case are required.")
                 else:
-                    prob = {
+                    new_prob = {
                         "id": get_new_id(problems),
                         "type": "programming",
                         "title": title,
@@ -613,44 +485,41 @@ if st.session_state.page == "Create Problem":
                         "memory_limit": memory_limit,
                         "test_cases": st.session_state.new_testcases
                     }
-                    problems.append(prob)
+                    problems.append(new_prob)
                     save_json("problems.json", problems)
                     st.success("Programming problem created successfully!")
-                    # Reset the form state
                     st.session_state.new_testcases = []
         else:  # math problem
-            # Rubric creation
             st.subheader("Rubric")
-            if "new_rubric" not in st.session_state:
+            if 'new_rubric' not in st.session_state:
                 st.session_state.new_rubric = []
             rub_section = st.text_input("Rubric section description")
             rub_points = st.number_input("Points for this section", min_value=0, value=0)
             if st.button("Add Section"):
-                if rub_section and rub_points:
-                    st.session_state.new_rubric.append({"section": rub_section, "points": int(rub_points)})
-                    st.rerun()
+                if rub_section.strip() == "":
+                    st.warning("Section description cannot be empty.")
                 else:
-                    st.warning("Please specify both section description and points.")
+                    st.session_state.new_rubric.append({"section": rub_section, "points": int(rub_points)})
+                    st.experimental_rerun()
             if st.session_state.new_rubric:
                 st.write("Current rubric:")
                 for sec in st.session_state.new_rubric:
                     st.write(f"- {sec['section']}: {sec['points']} points")
-            expected_answer = st.text_input("Expected answer (leave blank if manual evaluation only)")
-            submitted = st.button("Create Problem")
-            if submitted:
-                if title == "" or statement == "":
+            expected_answer = st.text_input("Expected answer (if auto-gradable)")
+            if st.button("Create Problem"):
+                if title.strip() == "" or statement.strip() == "":
                     st.error("Title and statement are required.")
                 else:
-                    prob = {
+                    new_prob = {
                         "id": get_new_id(problems),
                         "type": "math",
                         "title": title,
                         "statement": statement,
                         "author": st.session_state.username,
                         "rubric": st.session_state.new_rubric,
-                        "expected_answer": expected_answer if expected_answer else None
+                        "expected_answer": expected_answer.strip() if expected_answer.strip() != "" else None
                     }
-                    problems.append(prob)
+                    problems.append(new_prob)
                     save_json("problems.json", problems)
                     st.success("Math problem created successfully!")
                     st.session_state.new_rubric = []
@@ -667,37 +536,36 @@ if st.session_state.page == "Articles":
             st.write(art["content"], unsafe_allow_html=True)
             st.write(f"Votes: **{art.get('votes', 0)}**")
             if st.session_state.logged_in:
-                # Voting buttons
                 user = st.session_state.username
                 voted_up = user in art.get("upvoters", [])
                 voted_down = user in art.get("downvoters", [])
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("👍 Like", key=f"like{art['id']}", disabled=voted_up):
+                    if st.button("👍 Like", key=f"like_{art['id']}", disabled=voted_up):
                         art.setdefault("upvoters", []).append(user)
-                        art.setdefault("downvoters", [])
-                        if user in art["downvoters"]:
+                        if user in art.get("downvoters", []):
                             art["downvoters"].remove(user)
                         art["votes"] = art.get("votes", 0) + 1
                         save_json("articles.json", articles)
-                        st.rerun()
+                        st.experimental_rerun()
                 with col2:
-                    if st.button("👎 Dislike", key=f"dis{art['id']}", disabled=voted_down):
+                    if st.button("👎 Dislike", key=f"dislike_{art['id']}", disabled=voted_down):
                         art.setdefault("downvoters", []).append(user)
-                        art.setdefault("upvoters", [])
-                        if user in art["upvoters"]:
+                        if user in art.get("upvoters", []):
                             art["upvoters"].remove(user)
                         art["votes"] = art.get("votes", 0) - 1
                         save_json("articles.json", articles)
-                        st.rerun()
+                        st.experimental_rerun()
             # Comments section
             art_comments = [c for c in comments if c["article_id"] == art["id"]]
             for c in art_comments:
                 st.write(f"**{c['author']}**: {c['content']}  (_{c['date'][:19]}_)")
             if st.session_state.logged_in:
-                comment_text = st.text_input(f"Add a comment to {art['id']}:", key=f"comment{art['id']}")
-                if st.button("Post", key=f"post{art['id']}"):
-                    if comment_text:
+                comment_text = st.text_input(f"Add a comment to '{art['title']}':", key=f"comment_{art['id']}")
+                if st.button("Post", key=f"post_comment_{art['id']}"):
+                    if comment_text.strip() == "":
+                        st.warning("Comment cannot be empty.")
+                    else:
                         new_comment = {
                             "id": get_new_id(comments),
                             "article_id": art["id"],
@@ -707,22 +575,21 @@ if st.session_state.page == "Articles":
                         }
                         comments.append(new_comment)
                         save_json("comments.json", comments)
-                        st.rerun()
-                    else:
-                        st.warning("Comment cannot be empty.")
+                        st.experimental_rerun()
             st.markdown("---")
-
-    # Option for editors to add a new article
+    # Option for editors/admins to add a new article
     if st.session_state.logged_in and st.session_state.role in ("editor", "admin"):
         st.subheader("Write a new article")
-        title = st.text_input("Article Title")
-        content = st.text_area("Content (Markdown supported)")
-        if st.button("Publish"):
-            if title and content:
+        art_title = st.text_input("Article Title")
+        art_content = st.text_area("Content (Markdown supported)")
+        if st.button("Publish Article"):
+            if art_title.strip() == "" or art_content.strip() == "":
+                st.warning("Title and content cannot be empty.")
+            else:
                 new_article = {
                     "id": get_new_id(articles),
-                    "title": title,
-                    "content": content,
+                    "title": art_title,
+                    "content": art_content,
                     "author": st.session_state.username,
                     "date": datetime.utcnow().isoformat(),
                     "votes": 0,
@@ -732,9 +599,7 @@ if st.session_state.page == "Articles":
                 articles.append(new_article)
                 save_json("articles.json", articles)
                 st.success("Article published!")
-                st.rerun()
-            else:
-                st.warning("Title and content cannot be empty.")
+                st.experimental_rerun()
 
 # ---------- Page: My Submissions ----------
 if st.session_state.page == "Submissions":
@@ -746,23 +611,23 @@ if st.session_state.page == "Submissions":
         if not user_subs:
             st.write("No submissions yet.")
         else:
-            # Sort by date
             user_subs.sort(key=lambda s: s["timestamp"], reverse=True)
             for sub in user_subs:
-                prob = next((p for p in problems if p["id"] == sub["problem_id"]), {})
+                prob = next((p for p in problems if p["id"] == sub["problem_id"]), None) or {}
                 prob_title = prob.get("title", "[Deleted Problem]")
-                st.write(f"**Problem:** {prob_title}  \n**Date:** {sub['timestamp'][:19]}  \n**Score:** {sub['score']}")
+                st.write(f"**Problem:** {prob_title}")
+                st.write(f"**Date:** {sub['timestamp'][:19]}")
+                st.write(f"**Score:** {sub['score']}")
                 if prob.get("type") == "programming":
-                    st.write(f"**Language:** {sub.get('language', 'python')}  \n**Time:** {sub.get('time', '?')}s")
-                    # Show verdicts of tests if not all passed
+                    st.write(f"**Language:** {sub.get('language', 'cpp')}")
+                    st.write(f"**Time:** {sub.get('time', '?')}s")
                     if "results" in sub:
-                        failed = [r for r in sub["results"] if r["verdict"] != "Passed"]
-                        if failed:
-                            st.write("Some tests failed:")
-                            for r in failed:
-                                st.write(f"- {r['verdict']} (expected vs got may differ)")
-                else:
-                    # Math submission
+                        failed_tests = [r for r in sub["results"] if r["verdict"] != "Passed"]
+                        if failed_tests:
+                            st.write("Details of failed tests:")
+                            for r in failed_tests:
+                                st.write(f"- {r['verdict']}")
+                elif prob.get("type") == "math":
                     if sub.get("graded"):
                         st.write("Graded ✅")
                         if sub.get("feedback"):
@@ -777,88 +642,89 @@ if st.session_state.page == "Admin":
         st.error("Access denied.")
     else:
         st.title("Admin Panel")
-        tabs = []
+        tab_labels = []
         if st.session_state.role == "admin":
-            tabs.append("Users")
-        tabs.append("Problems")
-        tabs.append("Submissions")
-        tabs.append("Articles")
-        selected_tab = st.tabs(tabs)  # in new Streamlit, st.tabs returns a list of tab contexts
-        # We will use if/else since st.tabs doesn't directly return a value in newer versions:
-        # (Alternatively, use radio for internal nav if needed)
-        # Handle Users tab
+            tab_labels.append("Users")
+        tab_labels.extend(["Problems", "Submissions", "Articles"])
+        tabs = st.tabs(tab_labels)
+        tab_index = 0
+        # Users tab (admins only)
         if st.session_state.role == "admin":
-            with selected_tab[0]:
+            with tabs[0]:
                 st.subheader("User Management")
                 for u in users:
-                    col1, col2, col3 = st.columns([3,2,2])
-                    col1.write(f"{u['username']}")
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    col1.write(u['username'])
                     col2.write(f"Role: {u['role']}")
-                    if u["username"] != "admin":
-                        new_role = col2.selectbox("Change role", ["elev","editor","admin"], index=["elev","editor","admin"].index(u["role"]), key=f"role{u['id']}")
-                        if new_role != u["role"]:
-                            u["role"] = new_role
-                    if col3.button("Delete", key=f"del{u['id']}"):
-                        users.remove(u)
-                if st.button("Save Changes to Users"):
+                    if u['username'] != 'admin':
+                        new_role = col2.selectbox("Change role",
+                                                  ["elev", "editor", "admin"],
+                                                  index=["elev", "editor", "admin"].index(u['role']),
+                                                  key=f"role_select_{u['id']}")
+                        if new_role != u['role']:
+                            u['role'] = new_role
+                    if u['username'] != 'admin':
+                        if col3.button("Delete", key=f"del_user_{u['id']}"):
+                            users.remove(u)
+                if st.button("Save User Changes"):
                     save_json("users.json", users)
                     st.success("User changes saved.")
-        # Problems tab (for editor and admin, index differs based on role)
-        with selected_tab[0 if st.session_state.role != "admin" else 1]:
+            tab_index = 1
+        # Problems tab
+        with tabs[tab_index]:
             st.subheader("Problem Management")
             for p in problems:
-                col1, col2, col3 = st.columns([3,2,2])
+                col1, col2, col3 = st.columns([4, 3, 1])
                 col1.write(f"{p['title']} ({p['type']})")
                 col2.write(f"Author: {p.get('author', '-')}")
-                if col3.button("Delete", key=f"delprob{p['id']}"):
+                if col3.button("Delete", key=f"del_prob_{p['id']}"):
                     problems.remove(p)
-                    # also remove related submissions
-                    submissions_to_remove = [s for s in submissions if s["problem_id"] == p["id"]]
-                    for s in submissions_to_remove:
-                        submissions.remove(s)
-                    # Note: could also remove comments if problem had any (not applicable here)
+                    submissions[:] = [s for s in submissions if s['problem_id'] != p['id']]
             if st.button("Save Problem Changes"):
                 save_json("problems.json", problems)
                 save_json("submissions.json", submissions)
-                st.success("Problems updated.")
-        # Submissions tab
-        with selected_tab[1 if st.session_state.role != "admin" else 2]:
+                st.success("Problem changes saved.")
+        # Submissions tab (manual grading for math problems)
+        with tabs[tab_index+1]:
             st.subheader("Pending Math Submissions")
-            pending = [s for s in submissions if not s.get("graded") and next((p for p in problems if p["id"]==s["problem_id"]), {}).get("type") == "math"]
+            pending = [s for s in submissions if not s.get('graded') and next((p for p in problems if p['id']==s['problem_id']), {}).get('type') == 'math']
             if not pending:
-                st.write("No pending manual gradings.")
+                st.write("No pending submissions for grading.")
             else:
                 for s in pending:
-                    prob = next((p for p in problems if p["id"] == s["problem_id"]), {"title":"Unknown"})
-                    st.write(f"**{prob['title']}** by {s['user']} (submitted {s['timestamp'][:19]})")
-                    st.write("Solution:", s["answer"])
-                    # Show rubric and inputs for points
-                    prob_rubric = prob.get("rubric", [])
-                    points_awarded = {}
-                    for sec in prob_rubric:
-                        points_awarded[sec["section"]] = st.number_input(f"{sec['section']} ({sec['points']} pts)", min_value=0, max_value=sec["points"], key=f"grade{sec['section']}{s['id']}")
-                    if st.button(f"Grade Submission {s['id']}", key=f"gradebtn{s['id']}"):
-                        # Sum up points and mark graded
-                        total_points = sum(points_awarded.values())
-                        s["score"] = total_points
-                        s["graded"] = True
-                        s["feedback"] = "Graded by editor"
-                        # (We could store detailed breakdown in s as well, e.g., s['points_breakdown'] = points_awarded)
+                    prob = next((p for p in problems if p['id'] == s['problem_id']), {"title": "Unknown"})
+                    st.write(f"**{prob['title']}** – {s['user']} (submitted {s['timestamp'][:19]})")
+                    st.write("Solution:")
+                    st.code(s.get('answer', ''), language='text')
+                    # Show rubric sections for grading
+                    if prob.get('rubric'):
+                        points_awarded = {}
+                        for sec in prob['rubric']:
+                            points_awarded[sec['section']] = st.number_input(
+                                f"{sec['section']} ({sec['points']} pts)",
+                                min_value=0, max_value=sec['points'],
+                                key=f"grade_{sec['section']}_{s['id']}"
+                            )
+                    if st.button(f"Grade Submission {s['id']}"):
+                        total_points = 0
+                        if prob.get('rubric'):
+                            for sec in prob['rubric']:
+                                total_points += points_awarded.get(sec['section'], 0)
+                        s['score'] = total_points
+                        s['graded'] = True
+                        s['feedback'] = "Graded by editor"
                         save_json("submissions.json", submissions)
                         st.success(f"Submission {s['id']} graded with {total_points} points.")
-                        st.rerun()
+                        st.experimental_rerun()
         # Articles tab
-        with selected_tab[2 if st.session_state.role != "admin" else 3]:
+        with tabs[tab_index+2]:
             st.subheader("Manage Articles")
             for art in articles:
-                col1, col2 = st.columns([8,2])
+                col1, col2 = st.columns([8, 1])
                 col1.write(f"{art['title']} (by {art['author']})")
-                if col2.button("Delete", key=f"delart{art['id']}"):
+                if col2.button("Delete", key=f"del_art_{art['id']}"):
                     articles.remove(art)
-                    # remove its comments too
-                    to_remove = [c for c in comments if c["article_id"] == art["id"]]
-                    for c in to_remove:
-                        comments.remove(c)
+                    comments[:] = [c for c in comments if c['article_id'] != art['id']]
             if st.button("Save Article Changes"):
                 save_json("articles.json", articles)
                 save_json("comments.json", comments)
